@@ -23,6 +23,7 @@ from acme import jws
 from acme import messages
 # pylint: disable=unused-import, no-name-in-module
 from acme.magic_typing import Dict, List, Set, Text
+from string import atoi
 
 
 logger = logging.getLogger(__name__)
@@ -712,8 +713,10 @@ class ClientV2(ClientBase):
             OpenSSL.crypto.FILETYPE_PEM, orderr.csr_pem)
         wrapped_csr = messages.CertificateRequest(csr=jose.ComparableX509(csr))
         self._post(orderr.body.finalize, wrapped_csr)
-        while datetime.datetime.now() < deadline:
-            time.sleep(1)
+        is_processing = False
+        retry_after = 1
+        while datetime.datetime.now() < deadline or is_processing:
+            time.sleep(retry_after)
             response = self.net.get(orderr.uri)
             body = messages.Order.from_json(response.json())
             if body.error is not None:
@@ -722,6 +725,15 @@ class ClientV2(ClientBase):
                 certificate_response = self.net.get(body.certificate,
                                                     content_type=DER_CONTENT_TYPE).text
                 return orderr.update(body=body, fullchain_pem=certificate_response)
+            is_processing = (body.status == messages.STATUS_PROCESSING)
+            if is_processing:
+                # only support seconds format for now
+                try:
+                    retry_after = atoi(response.headers.get('Retry-After'))
+                    logger.debug('Retrying after %d seconds', retry_after)
+                except:
+                    logger.debug('Invalid Retry-After value. Retrying after 1 second instead')
+                    retry_after = 1
         raise errors.TimeoutError()
 
     def revoke(self, cert, rsn):
